@@ -5,13 +5,15 @@ Created on Feb 16, 2018
 '''
 import os
 from type_class import TypeClass
+
 class ClassBuilder(object):
     """ Build cpp files for extensions of a class
     """
     def __init__(self):
         self.index = None
         self.include_dirs = []
-        
+        self.add_include_dir(os.path.join(os.path.dirname(__file__), "include"))
+
     def add_include_dir(self, d):
         if not os.path.exists(d): return
         self.include_dirs.append(d)
@@ -60,11 +62,18 @@ class ClassBuilder(object):
         for child in cu.get_children():
             if child.kind == CK.FIELD_DECL:
                 if not child.access_specifier == AS.PUBLIC:
-                    print child.access_specifier
+                    print child.access_specifier, child.type.spelling, child.spelling
                     continue
-                
+                # skip all template for now.:TODO: put it back
+                if "<" in child.type.spelling:
+                    print("Template not supported yet", child.type.spelling, child.spelling)
+                    continue
+                # and remove all namespace for now
+                if len(child.type.spelling.split("::")) > 1:
+                    print("namespace not support yet. Use basetype.", child.type.spelling)
+                tp = child.type.spelling.split("::")[-1]
                 result.members.append(
-                    TypeMember(child.spelling, child.type.spelling)
+                    TypeMember(child.spelling, tp)
                     )
         return result
         

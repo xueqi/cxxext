@@ -40,6 +40,7 @@ myclass_new(PyTypeObject *type, PyObject *args, PyObject *kwds) {
     }
     return (PyObject *)self;
 }
+
 """
         self.assertEqual(tc.create_new(), func_new, tc.create_new())
         
@@ -72,6 +73,7 @@ myclass_init(myclassObject *self, PyObject *args, PyObject *kwds) {
     // be sure to reduce the refcount in dealloc
     Py_INCREF(self->cxxobj_owner);
 }
+
 """
         #print tc.create_new()
         #for l1, l2 in zip(tc.create_init().split("\n"), func_init.split("\n")):
@@ -87,6 +89,7 @@ myclass_init(myclassObject *self, PyObject *args, PyObject *kwds) {
     myclass * cxxobj;
     _myclassObject * cxxobj_owner;
 } myclassObject;
+
 """
         self.assertEqual(tc.create_struct(), struct_code, tc.create_struct())
     @unittest.skipIf(not PART, "PART TEST")    
@@ -94,13 +97,14 @@ myclass_init(myclassObject *self, PyObject *args, PyObject *kwds) {
         tc = TypeClass("myclass")
         member = TypeMember("mem1", "int")
         getter_code = """static PyObject *
-myclass_get_mem1(myclassObject *self, void *closure)
+myclass_get_mem1(PyObject *self, void *closure)
 {
-    PyObject * py_mem1 = int_to_py(self->cxxobj->mem1);
+    PyObject * py_mem1 = int_to_py(reinterpret_cast<myclassObject *>(self)->cxxobj->mem1);
     // increase refcount
     Py_XINCREF(py_mem1);
     return py_mem1;
 }
+
 """
         self.assertEqual(tc.create_getter(member), getter_code, tc.create_getter(member))
        
@@ -108,12 +112,13 @@ myclass_get_mem1(myclassObject *self, void *closure)
     def test_create_setter(self):
         tc = TypeClass("myclass")
         member = TypeMember("mem1", "int")
-        setter_code = """static PyObject *
-myclass_get_mem1(myclassObject *self, PyObject *value, void *closure)
+        setter_code = """static int
+myclass_set_mem1(PyObject *self, PyObject *value, void *closure)
 {
-    self->cxxobject->mem1 = py_to_int(value);
+    reinterpret_cast<myclassObject *>(self)->cxxobj->mem1 = py_to_int(value);
     // set the cxxobj value
 }
+
 """
         self.assertEqual(tc.create_setter(member), setter_code, tc.create_setter(member))
     
@@ -129,6 +134,7 @@ myclass_dealloc(myclassObject* self) {
         delete self->cxxobj;
     }
 }
+
 """
         self.assertEqual(tc.create_dealloc(), dealloc_code, tc.create_dealloc())
     @unittest.skipIf(not PART, "PART TEST")    
@@ -146,6 +152,7 @@ typedef struct _myclassObject {
     myclass * cxxobj;
     _myclassObject * cxxobj_owner;
 } myclassObject;
+
 """
         self.assertEqual(tc.create_header_file("myclass.h"), header, tc.create_header_file("myclass.h"))
     @unittest.skipIf(PART, "PART TEST")    
@@ -288,6 +295,7 @@ static PyTypeObject myclassType = {
     0,                         /* tp_alloc */
     myclass_new,                 /* tp_new */
 };
+
 """
         self.assertEqual(tc.create_type_def(), type_def, tc.create_type_def())
     

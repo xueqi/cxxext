@@ -27,6 +27,8 @@ class TestCompile(unittest.TestCase):
         # add include dir
         c.add_include_dir(sysconfig.get_paths()['include'])
         c.add_include_dir(os.getcwd())
+        for path in builder.include_dirs:
+            c.add_include_dir(path)
         for fname in glob.glob("*.h"):
             classname = os.path.basename(os.path.splitext(fname)[0]).upper()
             # create 

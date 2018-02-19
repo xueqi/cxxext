@@ -7,3 +7,4 @@ typedef struct _AObject {
     A * cxxobj;
     _AObject * cxxobj_owner;
 } AObject;
+

@@ -56,6 +56,7 @@ class TypeClass(object):
         tpl = """static PyMethodDef ${name}_methods[] = {
     ${all_method_defs}/* Sentinel */
 };
+
 """
         d = {"name" : self.name, 
              "all_method_defs" : ",\n".join(all_method_defs)}
@@ -72,7 +73,7 @@ class TypeClass(object):
         for member in self.members:
             code += self.create_member_function(member)
             
-            d = { "name" : self.name, 
+            d = { "name" : member.name, 
                  "getter" : "NULL",
                  "setter" : "NULL",
                  }
@@ -86,6 +87,7 @@ class TypeClass(object):
         tpl = """static PyGetSetDef ${name}_getseters[] = {
     ${all_member_defs}/* Sentinel */
 };
+
 """
         d = {"name" : self.name, 
              "all_member_defs" : ",\n".join(all_member_defs)}
@@ -114,12 +116,13 @@ class TypeClass(object):
         and set the cxxobj->mem
         The convert function should be an attribute of member
         """
-        tpl = """static PyObject *
-${name}_get_${mem_name}(${name}Object *self, PyObject *value, void *closure)
+        tpl = """static int
+${name}_set_${mem_name}(PyObject *self, PyObject *value, void *closure)
 {
-    self->cxxobject->${mem_name} = ${convert_func}(value);
+    reinterpret_cast<${name}Object *>(self)->cxxobj->${mem_name} = ${convert_func}(value);
     // set the cxxobj value
 }
+
 """
         d = {"name" : self.name, "mem_name": member.name,
              "convert_func" : member.convert_to_cxx()}
@@ -132,13 +135,14 @@ ${name}_get_${mem_name}(${name}Object *self, PyObject *value, void *closure)
         The convert function should be an attribute of member
         """
         tpl = """static PyObject *
-${name}_get_${mem_name}(${name}Object *self, void *closure)
+${name}_get_${mem_name}(PyObject *self, void *closure)
 {
-    PyObject * py_${mem_name} = ${convert_func}(self->cxxobj->${mem_name});
+    PyObject * py_${mem_name} = ${convert_func}(reinterpret_cast<${name}Object *>(self)->cxxobj->${mem_name});
     // increase refcount
     Py_XINCREF(py_${mem_name});
     return py_${mem_name};
 }
+
 """
         d = {"name" : self.name, "mem_name": member.name,
              "convert_func" : member.convert_to_python()}
@@ -176,6 +180,7 @@ ${name}_init(${name}Object *self, PyObject *args, PyObject *kwds) {
     // be sure to reduce the refcount in dealloc
     Py_INCREF(self->cxxobj_owner);
 }
+
 """
         d = {"name":self.name}
         func_code = Template(tpl).substitute(d)
@@ -198,6 +203,7 @@ ${name}_new(PyTypeObject *type, PyObject *args, PyObject *kwds) {
     }
     return (PyObject *)self;
 }
+
 """
         d = {"name":self.name}
         func_code = Template(tpl).substitute(d)
@@ -213,6 +219,7 @@ ${name}_dealloc(${name}Object* self) {
         delete self->cxxobj;
     }
 }
+
 """
         d = {"name":self.name}
         dealloc_code = Template(tpl).substitute(d)
@@ -228,6 +235,7 @@ ${name}_dealloc(${name}Object* self) {
     ${name} * cxxobj;
     _${name}Object * cxxobj_owner;
 } ${name}Object;
+
 """
         d = {"name":self.name}
         struct_code = Template(tpl).substitute(d)
@@ -235,7 +243,9 @@ ${name}_dealloc(${name}Object* self) {
 
     def create_cpp_file(self):
         tpl = """${license}#include "${name}_type.h"
+#include "type_convert.h"
 ${all_code}
+
 """
         d = {"license" : '/*%s*/\n' % self.get_license(), 
              "all_code" : self.get_all_code(),
@@ -278,6 +288,7 @@ ${struct_code}"""
 ${name}_check(PyObject *obj) {
     return PyObject_IsInstance(obj, (PyObject*)&${name}Type);
 }
+
 """
         self.foward_declares.append("bool %s_check(PyObject*);" % self.name)
         d = {"name":self.name}
@@ -328,6 +339,7 @@ ${name}_check(PyObject *obj) {
     0,                         /* tp_alloc */
     ${name}_new,                 /* tp_new */
 };
+
 """
         d = {"name":self.name, "typename":self.type_name}
         def_code = Template(tpl).substitute(d)
