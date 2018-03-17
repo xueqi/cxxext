@@ -25,7 +25,6 @@ class TestTypeClass(unittest.TestCase):
         self.assertEqual(len(tc.members), 1, "Should have one member")
         member = tc.members[0]
         self.assertEqual(member.name, "member1")
-        self.assertEqual(member.type, "int")
     
     @unittest.skipIf(not PART, "PART TEST")
     def test_create_new(self):
@@ -43,7 +42,25 @@ myclass_new(PyTypeObject *type, PyObject *args, PyObject *kwds) {
 
 """
         self.assertEqual(tc.create_new(), func_new, tc.create_new())
-        
+    
+    def assertCodeEqual(self, desired, actual):
+        desired = desired.split("\n")
+        actual = actual.split("\n")
+        self.assertEqual(len(desired), len(actual))
+        for i in range(len(desired)):
+            self.assertEqual(desired[i], actual[i])
+    
+    def test_create_init_with_obj_address(self):
+        tc = TypeClass("myclass")
+        func_code = """static PyObject *
+myclass_new_with_address(myclass *obj) {
+    myclassObject * py_obj = PyObject_New(myclassObject, &myclassType);
+    py_obj->cxxobj = obj;
+    return py_obj;
+}
+"""
+        self.assertCodeEqual(func_code, tc.create_init_with_obj_address())
+    
     @unittest.skipIf(not PART, "PART TEST")
     def test_create_init(self):
         tc = TypeClass("myclass")
@@ -71,7 +88,7 @@ myclass_init(myclassObject *self, PyObject *args, PyObject *kwds) {
     // increase the owner refcount, so that even the owner is deleted, 
     // we still could access the c++ class
     // be sure to reduce the refcount in dealloc
-    Py_INCREF(self->cxxobj_owner);
+    Py_XINCREF(self->cxxobj_owner);
 }
 
 """
@@ -92,36 +109,7 @@ myclass_init(myclassObject *self, PyObject *args, PyObject *kwds) {
 
 """
         self.assertEqual(tc.create_struct(), struct_code, tc.create_struct())
-    @unittest.skipIf(not PART, "PART TEST")    
-    def test_create_getter(self):
-        tc = TypeClass("myclass")
-        member = TypeMember("mem1", "int")
-        getter_code = """static PyObject *
-myclass_get_mem1(PyObject *self, void *closure)
-{
-    PyObject * py_mem1 = int_to_py(reinterpret_cast<myclassObject *>(self)->cxxobj->mem1);
-    // increase refcount
-    Py_XINCREF(py_mem1);
-    return py_mem1;
-}
 
-"""
-        self.assertEqual(tc.create_getter(member), getter_code, tc.create_getter(member))
-       
-    @unittest.skipIf(not PART, "PART TEST")    
-    def test_create_setter(self):
-        tc = TypeClass("myclass")
-        member = TypeMember("mem1", "int")
-        setter_code = """static int
-myclass_set_mem1(PyObject *self, PyObject *value, void *closure)
-{
-    reinterpret_cast<myclassObject *>(self)->cxxobj->mem1 = py_to_int(value);
-    // set the cxxobj value
-}
-
-"""
-        self.assertEqual(tc.create_setter(member), setter_code, tc.create_setter(member))
-    
     @unittest.skipIf(not PART, "PART TEST")    
     def test_create_dealloc(self):
         tc = TypeClass("myclass")
@@ -146,6 +134,7 @@ myclass_dealloc(myclassObject* self) {
         header = """/*licenses
 */
 #include <Python.h>
+#include <iostream>
 #include "myclass.h"
 typedef struct _myclassObject {
     PyObject_HEAD
@@ -153,8 +142,11 @@ typedef struct _myclassObject {
     _myclassObject * cxxobj_owner;
 } myclassObject;
 
+
+extern PyTypeObject myclassType;
 """
         self.assertEqual(tc.create_header_file("myclass.h"), header, tc.create_header_file("myclass.h"))
+    
     @unittest.skipIf(PART, "PART TEST")    
     def test_cpp(self):
         """ Create a code for class
@@ -254,7 +246,7 @@ static PyTypeObject myclassType = {
     @unittest.skipIf(not PART, "PART TEST")    
     def test_create_def(self):
         tc = TypeClass("myclass")
-        type_def = """static PyTypeObject myclassType = {
+        type_def = """PyTypeObject myclassType = {
     PyVarObject_HEAD_INIT(NULL, 0)
     "myclass",             /* tp_name */
     sizeof(myclassObject),             /* tp_basicsize */
@@ -297,7 +289,7 @@ static PyTypeObject myclassType = {
 };
 
 """
-        self.assertEqual(tc.create_type_def(), type_def, tc.create_type_def())
+        self.assertCodeEqual(tc.create_type_def(), type_def)
     
     @unittest.skip("Unit nex test for type class")
     def test_nothing(self):

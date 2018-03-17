@@ -5,6 +5,24 @@ Created on Feb 16, 2018
 '''
 import os
 from type_class import TypeClass
+from type_method import TypeMethod
+from ctypes import *
+from wrapper import *
+from clang.cindex import TypeKind
+TYPES = {"int" : c_int,
+         "long" : c_int,
+         "char **": LP_LP_c_char,
+         "char *": LP_c_char,
+         "double" : c_double,
+         "bool" : c_bool,
+         "char" : c_char,
+         "float" : c_float,
+         "long" : c_long,
+         "unsigned int": c_uint,
+         "short" : c_short,
+         "unsigned long long" : c_ulonglong,
+         "long long" : c_longlong,
+         "unsigned long" : c_ulong}
 
 class ClassBuilder(object):
     """ Build cpp files for extensions of a class
@@ -17,13 +35,25 @@ class ClassBuilder(object):
     def add_include_dir(self, d):
         if not os.path.exists(d): return
         self.include_dirs.append(d)
-        
+    
+    def parse(self, cxxfile):
+        if self.index is None:
+            from clang.cindex import Index
+            self.index = Index.create()        
+        args = ['-xc++-header', '-std=c++11']
+        for inc_dir in self.include_dirs:
+            args.append("-I%s" % inc_dir)
+        tu = self.index.parse(cxxfile, args)
+        return tu
+    
     def convert_cxx_to_python(self, fname, classname, output_dir):
         # convert a cxx class to python
         if self.index is None:
             from clang.cindex import Index
             self.index = Index.create()
-        args = ['-x', 'c++-header', '-std=c++11']
+        args = ['-xc++-header', '-std=c++11']
+        for inc_dir in self.include_dirs:
+            args.append("-I%s" % inc_dir)
         tu = self.index.parse(fname, args)
         # get all classes
         classes = self.get_all_classes(tu.cursor)
@@ -35,6 +65,7 @@ class ClassBuilder(object):
         h_file_name = os.path.join(output_dir, tc.header_file)
         open(cpp_file_name, 'w').write(tc.create_cpp_file())
         open(h_file_name, 'w').write(tc.create_header_file(fname))
+        return h_file_name
     
     def get_all_classes(self, start):
         """ Get all classes from tu, and return a dict containing the classes
@@ -48,32 +79,96 @@ class ClassBuilder(object):
                 if not cls_name in all_classes:
                     all_classes[cls_name] = cls
                 else:
-                    all_classes[cls_name].update(cls)
+                    if sizeof(all_classes[cls_name]) < sizeof(cls):
+                        all_classes[cls_name] = cls
+        print all_classes.keys()
+        print TYPES.keys()
         return all_classes
+
     
-    def get_class(self, cu, cls=None):
-        """ parse the class, get all members and methods
+    def get_type(self, clang_type, type_name=None):
+        """ Return ctype, construct with type_name
         """
-        from clang.cindex import CursorKind as CK, AccessSpecifier as AS
-        from type_member import TypeMember
-        result = cls
-        if result is None:
-            result = TypeClass(cu.spelling)
-        for child in cu.get_children():
-            if child.kind == CK.FIELD_DECL:
-                if not child.access_specifier == AS.PUBLIC:
-                    print child.access_specifier, child.type.spelling, child.spelling
-                    continue
-                # skip all template for now.:TODO: put it back
-                if "<" in child.type.spelling:
-                    print("Template not supported yet", child.type.spelling, child.spelling)
-                    continue
-                # and remove all namespace for now
-                if len(child.type.spelling.split("::")) > 1:
-                    print("namespace not support yet. Use basetype.", child.type.spelling)
-                tp = child.type.spelling.split("::")[-1]
-                result.members.append(
-                    TypeMember(child.spelling, tp)
-                    )
-        return result
+        if type_name is None:
+            type_name = clang_type.spelling
+        if type_name in TYPES:
+            return TYPES[type_name]
+        if clang_type.kind == TypeKind.ELABORATED:
+            return self.get_type(clang_type.get_named_type(), type_name)
+        if clang_type.kind == TypeKind.TYPEDEF:
+            return self.get_type(clang_type.get_declaration().underlying_typedef_type)
+
+        if clang_type.kind == TypeKind.UNEXPOSED or clang_type.kind == TypeKind.RECORD:
+            tp = self.get_class(clang_type.get_declaration(), cls_name=type_name)
+            TYPES[type_name] = tp
+            return tp
+        if clang_type.kind == TypeKind.POINTER:
+            # TODO: Do we need the derefed type?
+            return c_void_p 
+        if clang_type.kind == TypeKind.ENUM:
+            return c_int
         
+        elif clang_type.kind == TypeKind.CONSTANTARRAY:
+            base_type = clang_type.element_type
+            base_count = clang_type.element_count
+            if base_type.spelling in TYPES:
+                tp = TYPES[base_type.spelling] * base_count
+                TYPES[type_name] = tp
+                return tp
+        print clang_type.spelling, clang_type.kind, type_name
+        raise
+    
+    def get_class(self, cls_cu, cls_name=None):
+        """ parse the class, return as subclass of ctypes.Structure
+        """
+        from clang.cindex import CursorKind as CK
+        if cls_name == None:
+            cls_name = cls_cu.spelling
+        print "Parsing class %s" % cls_name
+        cls = new_struct(cls_name)
+        _fields_ = []
+        for child in cls_cu.get_children():
+            if child.kind == CK.FIELD_DECL:
+                sz = child.type.get_size()
+                cld_type = self.get_type(child.type)
+                cld_name = child.spelling
+                _fields_.append((cld_name, cld_type))
+            elif child.kind == CK.CXX_METHOD:
+                #print child.spelling, child.type.spelling
+                # parse methods.
+                #method = self.get_method(child)
+                #result.methods.append(method)
+                pass
+            else:
+                print child.kind, child.type.spelling
+        cls._fields_ = _fields_
+        print cls, sizeof(cls)
+        return cls
+    
+    def get_method(self, method_cu, cls=None):
+        """ Parse the method cursor and return a type method
+        :param method_cu: The cursor for a method
+        :param cls: The class that the method belongs to
+        """
+        rtn_type = method_cu.result_type.spelling
+        func_name = method_cu.spelling
+
+        args = []
+        for child in method_cu.get_children():
+            if child.type.spelling:
+                args.append((child.spelling, child.type.spelling))
+        
+        kwargs = {}
+        type_meth = TypeMethod(func_name, rtn_type, args, kwargs, cls=cls)
+        return type_meth
+
+# Test
+if __name__ == "__main__":
+    builder = ClassBuilder()
+    builder.add_include_dir("/home/src/relion")
+    builder.add_include_dir("/home/src/relion/external/fftw/include")
+    start = builder.parse("/home/src/relion/src/ml_optimiser.h")
+    from pprint import pprint
+    builder.get_all_classes(start.cursor)
+    #pprint([vars(_) for _ in builder.get_all_classes(start.cursor)['MlOptimiser'].members])
+    

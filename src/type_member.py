@@ -1,77 +1,51 @@
 """ Type member class
 """
-from string import Template
 TO_PY = 0
 FROM_PY = 1
-
-CONVERT_FUNCS = {
-    "int" : ["int_to_py", "py_to_int"],
-    "unsigned int" : ["uint_to_py", "py_to_uint"],
-    "char" : ["int_to_py", "py_to_int"],
-    "unsigned char" : ["uint_to_py", "py_to_uint"],
-    "short" : ["int_to_py", "py_to_int"],
-    "unsigned short" : ["uint_to_py", "py_to_uint"],
-    "long" : ["int_to_py", "py_to_int"],
-    "unsigned long" : ["uint_to_py", "py_to_uint"],
-    "long long" : ["longlong_to_py", "py_to_longlong"],
-    "unsigned long long":["ulonglong_to_py", "py_to_ulonglong"],
-    "double" : ["double_to_py", "py_to_double"],
-    "char *" : ["cstring_to_py", "py_to_cstring"],
-    "const char *" : ["cstring_to_py", "py_to_cstring"],
-    "string" : ["string_to_py", "py_to_string"]
-    }
-
-class CXXType(object):
-    """ CXX type object.
-    """
-    def __init__(self, type_name):
-        """
-        """
-        self.type_name = type_name.strip()
-        self.master_type = type_name.split("<")[0]
-        if "<" in type_name:
-            # remote the outmost pair of <
-            idx = type_name.index("<")
-            tmp = type_name[idx+1:-1]
-            # get the template types:
-            
+from cxx_type import CXXType
 
 class TypeMember(object):
     
-    def __init__(self, name, mem_type, convert_function_to_py=None,
-                 convert_function_from_py=None,
-                 getter=True, setter=True):
+    def __init__(self, name, cxx_type,
+                 getter=True, setter=True,
+                 is_public=False,
+                 cls=None):
         self.name = name
-        self.type = mem_type
+        self.type = CXXType(cxx_type)
+        # self.py_type = py_type
         self.getter = getter
         self.setter = setter
-        self.convert_function_to_py = convert_function_to_py
-        self.convert_function_from_py = convert_function_from_py
-        # check if the type is template: TODO
-        
+        self.cls = cls
+        self.is_public = is_public
     def convert_to_python(self):
         """ convertion code from cxx type to python type
         """
-        tpl = "${convert_func}"
-        d = {"name": self.name, 
-             "convert_func": self.get_convert_function(TO_PY)
-             }
-        return Template(tpl).substitute(d)
+        return self.type.convert_to_python(self.name)
     
-    def convert_to_cxx(self):
-        """ Convertion code from python type to cxx
+    def get_setter_code(self):
+        """ Generate setter code for this member in class
         """
-        return self.get_convert_function(FROM_PY)
+        setter_code = """static int
+{cls_name}_set_{name}(PyObject *self, PyObject *value, void *closure) {{
+    reinterpret_cast<{cls_name}Object *>(self)->cxxobj->{name} = {setter_clause};
+    // set the cxxobj value
+}}
+""".format(name=self.name, cls_name=self.cls.name,
+           setter_clause=self.type.convert_from_python("value"))
+  
+        return setter_code
     
-    def get_convert_function(self, direction):
-        if self.type in CONVERT_FUNCS:
-            return CONVERT_FUNCS[self.type][direction]
-        if direction == TO_PY:
-            if self.convert_function_to_py:
-                return self.convert_function_to_py
-            
-            return "%s_to_py" % self.type
-        if direction == FROM_PY:
-            if self.convert_function_from_py:
-                return self.convert_function_from_py
-            return "py_to_%s" % self.type
+    def get_getter_code(self):
+        """ Generate getter code for this member in class
+        """
+        getter_code = """static PyObject *
+{cls_name}_get_{name}(PyObject *self, void *closure) {{
+    PyObject * py_{name} = {convert_clause};
+    // increase refcount
+    Py_XINCREF(py_{name});
+    return py_{name};
+}}
+""".format(name=self.name, convert_clause=self.type.convert_to_cxx()[0],
+           cls_name=self.cls.name)
+        return getter_code
+        

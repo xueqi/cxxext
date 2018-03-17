@@ -6,7 +6,6 @@ Created on Feb 16, 2018
 import re
 from string import Template
 from type_member import TypeMember
-import code
 
 class TypeClass(object):
     '''
@@ -26,8 +25,27 @@ class TypeClass(object):
         self.methods = []
         self.members = []
         self.export_functions = []
-        self.foward_declares = []
+        self.forward_declares = []
+        
+
+    def update(self, other):
+        """ Update class using other class
+        """
+        if self.name != other.name:
+            raise RuntimeError(
+                "The name are not the same. Original Class: %s, new class: %s" 
+                % (self.name, other.name))
+        if self.mod != other.mod:
+            raise RuntimeError("Not from same module: %s vas %s"
+                               % (self.mod, other.mod))
+        self.methods.extend(other.methods)
+        self.members.extend(other.members)
+        self.export_functions.extend(other.export_functions)
+        self.forward_declares.extend(other.forward_declares)
+        
+    
     def add_member(self, name, type):
+        print name, type
         self.members.append(TypeMember(name, type))
     
     def add_method(self, name, rtn_type, args):
@@ -48,7 +66,9 @@ class TypeClass(object):
         """ 
         """
         all_method_defs = []
+        code = ""
         for method in self.methods:
+            method.cls = self
             code += self.create_method_function(method)
             all_method_defs.append(method.get_method_def())
         all_method_defs.append("{NULL}")
@@ -61,9 +81,16 @@ class TypeClass(object):
         d = {"name" : self.name, 
              "all_method_defs" : ",\n".join(all_method_defs)}
         getset_code = Template(tpl).substitute(d)
-        return getset_code
+        return code + getset_code
     
-    
+    def create_method_function(self, method):
+        """ Create the method function that 
+            take python function
+            call the c++ function, 
+            return python type
+        """
+        return method.get_code()
+
     def create_members(self):
         """ Member is exposed as properties.
         """
@@ -116,40 +143,28 @@ class TypeClass(object):
         and set the cxxobj->mem
         The convert function should be an attribute of member
         """
-        tpl = """static int
-${name}_set_${mem_name}(PyObject *self, PyObject *value, void *closure)
-{
-    reinterpret_cast<${name}Object *>(self)->cxxobj->${mem_name} = ${convert_func}(value);
-    // set the cxxobj value
-}
-
-"""
-        d = {"name" : self.name, "mem_name": member.name,
-             "convert_func" : member.convert_to_cxx()}
-        getter_code = Template(tpl).substitute(d)
-        return getter_code
+        return member.get_setter_code()
     
     def create_getter(self, member):
         """ A typical getter is to wrap the cxx type into python type, 
         and return the wrapped value.
         The convert function should be an attribute of member
         """
-        tpl = """static PyObject *
-${name}_get_${mem_name}(PyObject *self, void *closure)
-{
-    PyObject * py_${mem_name} = ${convert_func}(reinterpret_cast<${name}Object *>(self)->cxxobj->${mem_name});
-    // increase refcount
-    Py_XINCREF(py_${mem_name});
-    return py_${mem_name};
-}
-
-"""
-        d = {"name" : self.name, "mem_name": member.name,
-             "convert_func" : member.convert_to_python()}
-        getter_code = Template(tpl).substitute(d)
+        getter_code = member.get_getter_code()
         return getter_code
         
+    def create_init_with_obj_address(self):
+        
+        func_code = """static PyObject *
+{name}_new_with_address({name} *obj) {{
+    {name}Object * py_obj = PyObject_New({name}Object, &{name}Type);
+    py_obj->cxxobj = obj;
+    return py_obj;
+}}
+""".format(name=self.name)
+        return func_code
     
+
     def create_init(self):
         """ Create the init function.
         Init function will replace the new function.
@@ -178,7 +193,7 @@ ${name}_init(${name}Object *self, PyObject *args, PyObject *kwds) {
     // increase the owner refcount, so that even the owner is deleted, 
     // we still could access the c++ class
     // be sure to reduce the refcount in dealloc
-    Py_INCREF(self->cxxobj_owner);
+    Py_XINCREF(self->cxxobj_owner);
 }
 
 """
@@ -268,19 +283,30 @@ ${all_code}
         # The typecheck
         codes += self.create_type_check()
         dec = ""
-        for fd in self.foward_declares:
+        for fd in self.forward_declares:
             dec += "%s;\n" % fd
         codes = dec + codes
         return codes
     
     def create_header_file(self, class_includes):
-        tpl = """${license}#include <Python.h>
-#include "${class_includes}"
-${struct_code}"""
+
         d = {"license" : '/*%s*/\n' % self.get_license(), 
              "struct_code" : self.create_struct(),
-             "class_includes": class_includes}
-        header_code = Template(tpl).substitute(d)
+             "class_includes": class_includes,
+             "cls_name" : self.name}
+        tpl = """{license}#include <Python.h>
+#include <iostream>
+#include "{class_includes}"
+{struct_code}
+extern PyTypeObject {cls_name}Type;
+// The converter function
+inline {cls_name}Object * {cls_name}_to_{cls_name}Object ({cls_name} & cxxobj) {{
+    PyObject * obj = PyObject_New({cls_name}Object, &{cls_name}Type);
+    obj->cxxobj = &cxxobj;
+    return obj;
+}}
+""".format(**d)        
+        header_code = tpl
         return header_code
     
     def create_type_check(self):
@@ -290,20 +316,37 @@ ${name}_check(PyObject *obj) {
 }
 
 """
-        self.foward_declares.append("bool %s_check(PyObject*);" % self.name)
+        self.forward_declares.append("bool %s_check(PyObject*);" % self.name)
         d = {"name":self.name}
         check_code = Template(tpl).substitute(d)
         return check_code
     
+    def convert_to_cxx(self):
+        """ function to convert to cxx
+        """
+        method_name = "{name}_to_{classname}".format(
+            name=self.name, classname=self.py_class_name)
+        method_decl = "PyObject* {method_name}({name} *);".format(
+            name=self.name, method_name=method_name)
+        method_def = """PyObject* {method_name}({name} * cxxobj) {{
+    PyObject *result = PyObject_New({name}, &{typename});
+    ({classname})result->cxxobj = cxxobj;
+    return result;
+}}
+""".format(name=self.name,
+           method_name=method_name, 
+           classname=self.py_class_name, typename=self.py_type_name)
+        return method_name, method_decl, method_def
+    
     def create_type_def(self):
         """ Create the definition of the type.
         """
-        tpl = """static PyTypeObject ${name}Type = {
+        type_def_clause = """PyTypeObject {typename} = {{
     PyVarObject_HEAD_INIT(NULL, 0)
-    "${typename}",             /* tp_name */
-    sizeof(${name}Object),             /* tp_basicsize */
+    "{name}",             /* tp_name */
+    sizeof({classname}),             /* tp_basicsize */
     0,                         /* tp_itemsize */
-    (destructor)${name}_dealloc, /* tp_dealloc */
+    (destructor){name}_dealloc, /* tp_dealloc */
     0,                         /* tp_print */
     0,                         /* tp_getattr */
     0,                         /* tp_setattr */
@@ -320,30 +363,28 @@ ${name}_check(PyObject *obj) {
     0,                         /* tp_as_buffer */
     Py_TPFLAGS_DEFAULT |
         Py_TPFLAGS_BASETYPE,   /* tp_flags */
-    "${name} objects",           /* tp_doc */
+    "{name} objects",           /* tp_doc */
     0,                         /* tp_traverse */
     0,                         /* tp_clear */
     0,                         /* tp_richcompare */
     0,                         /* tp_weaklistoffset */
     0,                         /* tp_iter */
     0,                         /* tp_iternext */
-    ${name}_methods,           /* tp_methods */
+    {name}_methods,           /* tp_methods */
     0,                         /* tp_members */
-    ${name}_getseters,        /* tp_getset */
+    {name}_getseters,        /* tp_getset */
     0,                         /* tp_base */
     0,                         /* tp_dict */
     0,                         /* tp_descr_get */
     0,                         /* tp_descr_set */
     0,                         /* tp_dictoffset */
-    (initproc)${name}_init,      /* tp_init */
+    (initproc){name}_init,      /* tp_init */
     0,                         /* tp_alloc */
-    ${name}_new,                 /* tp_new */
-};
+    {name}_new,                 /* tp_new */
+}};
 
-"""
-        d = {"name":self.name, "typename":self.type_name}
-        def_code = Template(tpl).substitute(d)
-        return def_code
+""".format(name=self.name, typename=self.py_type_name, classname=self.py_class_name)
+        return type_def_clause
     
     def get_license(self):
         return "licenses\n"
@@ -360,4 +401,10 @@ ${name}_check(PyObject *obj) {
             return "%s.%s" % (self.mod, self.name)
         else:
             return self.name
+    @property
+    def py_class_name(self):
+        return "%sObject" % self.name
+    @property
+    def py_type_name(self):
+        return "%sType" % self.name
     
